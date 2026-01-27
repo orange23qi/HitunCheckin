@@ -1,0 +1,20 @@
+{
+  "email": "your_email@example.com",
+  "password": "your_password",
+  "headless": true,
+  "timeout": 30,
+  "log_dir": "logs",
+  "log_level": "INFO",
+
+  "_comment_cloudflare": "Cloudflare 相关配置",
+  "use_undetected_chrome": true,
+  "use_cookies": true,
+  "cloudflare_timeout": 30,
+  "data_dir": "data",
+
+  "_comment_notification": "Server酱推送配置",
+  "enable_notification": false,
+  "serverchan_key": "",
+  "serverchan_uid": "",
+  "notification_timeout": 10
+}

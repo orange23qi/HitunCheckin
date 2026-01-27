@@ -1,0 +1,35 @@
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# 本地配置和数据
+config.json
+data/
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# 文档和脚本
+README.md
+DOCKER_DEPLOY.md
+setup_*.sh
+debug_*.py
+
+# macOS
+.DS_Store

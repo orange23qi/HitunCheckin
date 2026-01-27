@@ -1,0 +1,43 @@
+# 配置文件(包含敏感信息)
+config.json
+manual_cookies.json
+manual_cookies.txt
+
+# 数据与日志
+data/
+logs/
+*.log
+*.pkl
+
+# 构建与导出镜像
+*.tar.gz
+*.tar
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+bin/
+lib/
+include/
+pyvenv.cfg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# 截图
+*.png
+*.jpg

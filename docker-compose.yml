@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  hitun-checkin:
+    build: .
+    container_name: hitun-checkin
+    restart: unless-stopped
+
+    # 环境变量
+    environment:
+      # 运行模式: once(单次执行), cron(定时任务), test(测试登录)
+      - RUN_MODE=cron
+      # 定时任务计划 (默认每天早上8点)
+      - CRON_SCHEDULE=0 8 * * *
+      # 启动时是否立即执行一次签到
+      - RUN_ON_START=true
+      # 时区
+      - TZ=Asia/Shanghai
+
+    # 挂载卷
+    volumes:
+      # 数据目录 (包含 config.json, cookies 等)
+      - ./data:/app/data
+      # 日志目录
+      - ./logs:/app/logs
+
+    # 资源限制 (可选)
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+    # 安全选项
+    security_opt:
+      - no-new-privileges:true
+
+    # 健康检查 (可选)
+    # healthcheck:
+    #   test: ["CMD", "test", "-f", "/app/logs/checkin.log"]
+    #   interval: 1h
+    #   timeout: 10s
+    #   retries: 3
