@@ -135,14 +135,18 @@ class HitunCheckin:
                 options.add_argument('--window-size=1920,1080')
 
                 # 明确指定浏览器和驱动路径，避免下载挂起
-                browser_path = '/usr/bin/chromium'
+                # 按优先级查找 chromium 可执行文件
+                browser_candidates = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome-stable']
+                browser_path = None
+                for candidate in browser_candidates:
+                    if os.path.exists(candidate):
+                        browser_path = candidate
+                        break
+
                 driver_path = '/usr/bin/chromedriver'
-                
-                if not os.path.exists(browser_path):
-                    browser_path = None # 回退到自动查找
-                
+
                 self.driver = uc.Chrome(
-                    options=options, 
+                    options=options,
                     browser_executable_path=browser_path,
                     driver_executable_path=driver_path if os.path.exists(driver_path) else None,
                     use_subprocess=True
@@ -174,6 +178,13 @@ class HitunCheckin:
         chrome_options.add_experimental_option('useAutomationExtension', False)
 
         try:
+            # 指定 chromium 二进制路径
+            browser_candidates = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome-stable']
+            for candidate in browser_candidates:
+                if os.path.exists(candidate):
+                    chrome_options.binary_location = candidate
+                    break
+
             # 优先尝试使用已安装的 chromedriver
             if os.path.exists('/usr/bin/chromedriver'):
                 service = Service('/usr/bin/chromedriver')
@@ -255,10 +266,12 @@ class HitunCheckin:
             return False
 
     def _save_cookies(self):
-        """保存当前会话的 cookies"""
+        """保存当前会话的 cookies（过滤掉 Cloudflare 相关 cookies）"""
         try:
             cookie_path = self._get_cookie_path()
             cookies = self.driver.get_cookies()
+            # 保留所有 cookies（包括 cf_clearance），同一 undetected-chromedriver 指纹可复用
+            self.logger.info(f"保存 {len(cookies)} 个 cookies")
             with open(cookie_path, 'wb') as f:
                 pickle.dump(cookies, f)
             self.logger.info(f"Cookies 已保存到: {cookie_path}")
@@ -313,42 +326,32 @@ class HitunCheckin:
             with open(cookie_path, 'rb') as f:
                 cookies = pickle.load(f)
 
+            # 先访问目标域名（仅用于设置域，不等 CF 通过）
             self.driver.get("https://hitun.io")
             time.sleep(2)
 
+            # 立即注入 cookies，不等 Cloudflare（和手动 cookies 流程一致）
             for cookie in cookies:
                 try:
                     self.driver.add_cookie(cookie)
                 except Exception as e:
                     self.logger.debug(f"添加 cookie 失败: {e}")
 
-            self.logger.info(f"已加载 {len(cookies)} 个 cookies")
-            return True
-        except Exception as e:
-            self.logger.warning(f"加载 cookies 失败: {e}")
+            self.logger.info(f"已注入 {len(cookies)} 个 cookies，正在导航验证...")
+
+            # 注入后直接导航到用户页面验证
+            self.driver.get("https://hitun.io/user")
+            time.sleep(5)
+
+            # 检查是否成功进入用户页面
+            current_url = self.driver.current_url
+            if ('user' in current_url or 'dashboard' in current_url) and 'login' not in current_url:
+                self.logger.info("pkl Cookies 验证成功!")
+                self._save_cookies()
+                return True
+
+            self.logger.warning("pkl Cookies 已失效")
             return False
-
-        if not cookie_path.exists():
-            self.logger.info("未找到保存的 cookies")
-            return False
-
-        try:
-            with open(cookie_path, 'rb') as f:
-                cookies = pickle.load(f)
-
-            # 先访问目标域名
-            self.driver.get("https://hitun.io")
-            time.sleep(2)
-
-            # 加载 cookies
-            for cookie in cookies:
-                try:
-                    self.driver.add_cookie(cookie)
-                except Exception as e:
-                    self.logger.debug(f"添加 cookie 失败: {e}")
-
-            self.logger.info(f"已加载 {len(cookies)} 个 cookies")
-            return True
         except Exception as e:
             self.logger.warning(f"加载 cookies 失败: {e}")
             return False
@@ -410,19 +413,17 @@ class HitunCheckin:
 
     def _try_cookie_login(self) -> bool:
         """尝试使用保存的 cookies 登录"""
-        # _load_cookies 内部现在已经包含了访问页面和注入逻辑
         if not self._load_cookies():
             return False
 
         try:
-            # 检查当前是否已经在用户页面(由 _load_cookies 完成)
+            # 检查 _load_cookies 是否已经验证成功（手工 cookies 流程会直接导航到 /user）
             current_url = self.driver.current_url
-            if 'user' in current_url or 'dashboard' in current_url:
-                if 'login' not in current_url:
-                    self.logger.info("Cookie 验证状态正常，直接进入流程")
-                    return True
+            if ('user' in current_url or 'dashboard' in current_url) and 'login' not in current_url:
+                self.logger.info("Cookie 登录验证成功（已在用户页面）")
+                return True
 
-            # 如果没在用户页面，再尝试跳转一次
+            # 只有未验证时才重新导航
             self.driver.get("https://hitun.io/user")
             time.sleep(5)
 
@@ -430,6 +431,13 @@ class HitunCheckin:
             cf_timeout = self.config.get('cloudflare_timeout', 60)
             if not self._wait_for_cloudflare(max_wait=cf_timeout):
                 return False
+
+            # 检查是否成功进入用户页面
+            current_url = self.driver.current_url
+            if ('user' in current_url or 'dashboard' in current_url) and 'login' not in current_url:
+                self.logger.info("Cookie 登录验证成功")
+                self._save_cookies()
+                return True
 
             self.logger.info("Cookie 已失效，需要重新登录")
             return False
@@ -704,10 +712,10 @@ class HitunCheckin:
         try:
             self.logger.info("开始签到流程...")
             
-            # 确保在用户页面
-            user_url = "https://hitun.io/user"
-            if self.driver.current_url != user_url:
-                self.driver.get(user_url)
+            # 确保在用户页面（避免不必要的导航触发 Cloudflare）
+            current_url = self.driver.current_url
+            if 'user' not in current_url and 'dashboard' not in current_url:
+                self.driver.get("https://hitun.io/user")
                 time.sleep(2)
             
             # 查找签到按钮 - 尝试多种方式定位

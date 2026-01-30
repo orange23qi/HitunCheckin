@@ -29,6 +29,14 @@ fi
 # 创建软链接到工作目录
 ln -sf /app/data/config.json /app/config.json
 
+# 启动 Xvfb (如果安装了)
+if command -v Xvfb &> /dev/null; then
+    log "启动 Xvfb..."
+    Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
+    # 等待 Xvfb 启动
+    sleep 2
+fi
+
 # 获取运行模式
 RUN_MODE=${RUN_MODE:-"once"}
 CRON_SCHEDULE=${CRON_SCHEDULE:-"0 8 * * *"}
@@ -52,8 +60,13 @@ case "$RUN_MODE" in
         # 定时任务模式
         log "设置定时任务..."
 
-        # 创建 cron 任务文件
-        echo "${CRON_SCHEDULE} cd /app && /usr/local/bin/python hitun_checkin.py --config /app/data/config.json >> /app/logs/cron.log 2>&1" > /etc/cron.d/hitun-checkin
+        # 将容器环境变量导出到文件，供 cron 子进程使用
+        env | grep -v '^_=' | grep -v '^HOSTNAME=' | grep -v '^HOME=' | \
+            sed 's/^\(.*\)$/export \1/' > /app/.env.sh
+        chmod 600 /app/.env.sh
+
+        # 创建 cron 任务文件（先加载环境变量再执行）
+        echo "${CRON_SCHEDULE} . /app/.env.sh && cd /app && /usr/local/bin/python hitun_checkin.py --config /app/data/config.json >> /app/logs/cron.log 2>&1" > /etc/cron.d/hitun-checkin
         chmod 0644 /etc/cron.d/hitun-checkin
         crontab /etc/cron.d/hitun-checkin
 

@@ -1,7 +1,5 @@
 # 使用官方 Python 镜像，基于 Debian
-# 官方源: python:3.11-slim-bookworm
-# 国内镜像: docker.1ms.run/python:3.11-slim-bookworm
-FROM docker.1ms.run/python:3.11-slim-bookworm
+FROM python:3.11-slim-bookworm
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1 \
@@ -35,18 +33,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xdg-utils \
     cron \
     tzdata \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-RUN ARCH=$(dpkg --print-architecture) && \
-    if [ "$ARCH" = "amd64" ]; then \
-        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
-        && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-        && apt-get update \
-        && apt-get install -y --no-install-recommends google-chrome-stable; \
-    else \
-        apt-get update \
-        && apt-get install -y --no-install-recommends chromium chromium-driver; \
-    fi \
+# 统一使用 Debian 仓库的 chromium + chromium-driver，版本始终匹配
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends chromium chromium-driver \
     && rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
