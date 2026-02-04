@@ -42,10 +42,14 @@ except ImportError:
 
 class HitunCheckin:
     """Hitun.io 自动签到类"""
-    
+
+    # 页面加载重试配置
+    MAX_PAGE_LOAD_RETRIES = 3
+    PAGE_LOAD_RETRY_DELAY = 5  # 秒
+
     def __init__(self, config_path: str = "config.json"):
         """初始化签到工具
-        
+
         Args:
             config_path: 配置文件路径
         """
@@ -151,7 +155,7 @@ class HitunCheckin:
                     driver_executable_path=driver_path if os.path.exists(driver_path) else None,
                     use_subprocess=True
                 )
-                self.driver.set_page_load_timeout(self.config.get('timeout', 30))
+                self.driver.set_page_load_timeout(self.config.get('timeout', 60))
                 self.logger.info("undetected-chromedriver 初始化成功")
                 return
             except Exception as e:
@@ -195,7 +199,7 @@ class HitunCheckin:
             self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
                 'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
             })
-            self.driver.set_page_load_timeout(self.config.get('timeout', 30))
+            self.driver.set_page_load_timeout(self.config.get('timeout', 60))
             self.logger.info("WebDriver 初始化成功")
         except Exception as e:
             self.logger.error(f"WebDriver 初始化失败: {e}")
@@ -221,6 +225,45 @@ class HitunCheckin:
             self.logger.error(f"等待元素超时: {by}={value}")
             raise
 
+    def _safe_get(self, url: str, retries: int = None) -> bool:
+        """带重试的页面加载，处理 ERR_CONNECTION_CLOSED / timeout 等瞬态错误
+
+        Args:
+            url: 要访问的 URL
+            retries: 重试次数，默认使用 MAX_PAGE_LOAD_RETRIES
+
+        Returns:
+            True 表示页面加载成功
+        """
+        if retries is None:
+            retries = self.MAX_PAGE_LOAD_RETRIES
+
+        for attempt in range(1, retries + 1):
+            try:
+                self.driver.get(url)
+                return True
+            except Exception as e:
+                error_msg = str(e)
+                is_transient = any(kw in error_msg for kw in [
+                    'ERR_CONNECTION_CLOSED',
+                    'ERR_CONNECTION_RESET',
+                    'ERR_CONNECTION_REFUSED',
+                    'ERR_NAME_NOT_RESOLVED',
+                    'Timed out receiving message from renderer',
+                    'timeout',
+                    'net::ERR_',
+                ])
+                if is_transient and attempt < retries:
+                    self.logger.warning(
+                        f"页面加载失败 (尝试 {attempt}/{retries}): {error_msg[:120]}"
+                    )
+                    time.sleep(self.PAGE_LOAD_RETRY_DELAY * attempt)
+                else:
+                    self.logger.error(
+                        f"页面加载最终失败 ({attempt}/{retries}): {error_msg[:200]}"
+                    )
+                    raise
+
     def _get_cookie_path(self) -> Path:
         """获取 cookie 文件路径"""
         data_dir = Path(self.config.get('data_dir', 'data'))
@@ -231,9 +274,9 @@ class HitunCheckin:
         """注入手动提供的 cookies 并验证"""
         try:
             # 预访问域名
-            self.driver.get("https://hitun.io")
+            self._safe_get("https://hitun.io")
             time.sleep(2)
-            
+
             for cookie in cookies:
                 # 关键修复：确保域名格式正确
                 if 'domain' in cookie and not cookie['domain'].startswith('.'):
@@ -249,7 +292,7 @@ class HitunCheckin:
                     self.logger.debug(f"注入 Cookie {cookie.get('name')} 失败: {e}")
             
             self.logger.info("手工 Cookies 注入完成，正在刷新验证...")
-            self.driver.get("https://hitun.io/user") # 注入后直接跳转
+            self._safe_get("https://hitun.io/user") # 注入后直接跳转
             time.sleep(5)
             
             # 检查是否成功进入后台
@@ -291,9 +334,9 @@ class HitunCheckin:
                     manual_cookies = json.load(f)
                 
                 # 预访问域名
-                self.driver.get("https://hitun.io")
+                self._safe_get("https://hitun.io")
                 time.sleep(2)
-                
+
                 for cookie in manual_cookies:
                     if 'domain' in cookie and not cookie['domain'].startswith('.'):
                         cookie['domain'] = '.' + cookie['domain']
@@ -305,9 +348,9 @@ class HitunCheckin:
                         self.logger.debug(f"注入 Cookie {cookie.get('name')} 失败: {e}")
                 
                 self.logger.info("手工 Cookies 注入完成，正在刷新验证...")
-                self.driver.get("https://hitun.io/user")
+                self._safe_get("https://hitun.io/user")
                 time.sleep(5)
-                
+
                 if "user" in self.driver.current_url or "dashboard" in self.driver.current_url:
                     self.logger.info("✅ 手工 Cookies 验证成功!")
                     self._save_cookies()
@@ -327,7 +370,7 @@ class HitunCheckin:
                 cookies = pickle.load(f)
 
             # 先访问目标域名（仅用于设置域，不等 CF 通过）
-            self.driver.get("https://hitun.io")
+            self._safe_get("https://hitun.io")
             time.sleep(2)
 
             # 立即注入 cookies，不等 Cloudflare（和手动 cookies 流程一致）
@@ -340,7 +383,7 @@ class HitunCheckin:
             self.logger.info(f"已注入 {len(cookies)} 个 cookies，正在导航验证...")
 
             # 注入后直接导航到用户页面验证
-            self.driver.get("https://hitun.io/user")
+            self._safe_get("https://hitun.io/user")
             time.sleep(5)
 
             # 检查是否成功进入用户页面
@@ -424,7 +467,7 @@ class HitunCheckin:
                 return True
 
             # 只有未验证时才重新导航
-            self.driver.get("https://hitun.io/user")
+            self._safe_get("https://hitun.io/user")
             time.sleep(5)
 
             # 等待可能的 Cloudflare 挑战
@@ -462,7 +505,7 @@ class HitunCheckin:
 
             # 访问登录页面
             login_url = "https://hitun.io/auth/login"
-            self.driver.get(login_url)
+            self._safe_get(login_url)
             self.logger.info(f"访问登录页面: {login_url}")
 
             # 等待可能的 Cloudflare 挑战
@@ -620,7 +663,7 @@ class HitunCheckin:
                         if 'login' in current_url.lower():
                             self.logger.info("检测到登录成功(页面显示欢迎信息),尝试导航到用户页面...")
                             # 直接导航到用户页面
-                            self.driver.get("https://hitun.io/user")
+                            self._safe_get("https://hitun.io/user")
                             time.sleep(3)
                             if 'user' in self.driver.current_url:
                                 self.logger.info(f"✅ 登录成功! 已导航到用户页面")
@@ -715,7 +758,7 @@ class HitunCheckin:
             # 确保在用户页面（避免不必要的导航触发 Cloudflare）
             current_url = self.driver.current_url
             if 'user' not in current_url and 'dashboard' not in current_url:
-                self.driver.get("https://hitun.io/user")
+                self._safe_get("https://hitun.io/user")
                 time.sleep(2)
             
             # 查找签到按钮 - 尝试多种方式定位
@@ -859,70 +902,91 @@ class HitunCheckin:
             self.logger.error(f"签到过程出错: {e}")
             return False, None
     
-    def run(self) -> bool:
-        """运行完整的签到流程
-        
+    def _run_once(self) -> tuple[bool, Optional[str]]:
+        """执行一次完整的签到流程（初始化浏览器 -> 登录 -> 签到）
+
         Returns:
-            整体流程是否成功
+            (是否成功, 获得的流量)
         """
-        success = False
         traffic = None
-        
         try:
-            self.logger.info("=" * 50)
-            self.logger.info(f"开始执行签到任务 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            self.logger.info("=" * 50)
-            
             # 初始化浏览器
             self._init_driver()
-            
+
             # 登录
             if not self.login():
-                self.logger.error("登录失败,终止签到流程")
-                return False
-            
+                self.logger.error("登录失败")
+                return False, None
+
             # 签到
             checkin_success, traffic = self.checkin()
             if checkin_success:
                 self.logger.info("✅ 签到流程完成!")
-                success = True
+                return True, traffic
             else:
                 self.logger.error("❌ 签到失败")
-                success = False
-            
+                return False, traffic
+
         except Exception as e:
             self.logger.error(f"执行过程中发生错误: {e}")
-            success = False
-            
+            return False, traffic
         finally:
             # 清理资源
             if self.driver:
-                self.driver.quit()
-                self.logger.info("浏览器已关闭")
-            
-            self.logger.info("=" * 50)
-            self.logger.info(f"任务结束 - 状态: {'成功' if success else '失败'}")
-            self.logger.info("=" * 50)
-            
-            # 发送推送通知
-            if self.notifier:
                 try:
-                    if success:
-                        # 签到成功通知,包含流量信息
-                        traffic_str = f"{traffic}M" if traffic else None
-                        self.notifier.send_checkin_success(
-                            traffic=traffic_str,
-                            details=f"签到时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                        )
-                    else:
-                        # 签到失败通知
-                        self.notifier.send_checkin_failure(
-                            error_msg="签到流程执行失败",
-                            details=f"失败时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\\n请查看日志文件获取详细信息"
-                        )
-                except Exception as e:
-                    self.logger.warning(f"发送推送通知失败: {e}")
-        
+                    self.driver.quit()
+                except Exception:
+                    pass
+                self.driver = None
+                self.logger.info("浏览器已关闭")
+
+    def run(self) -> bool:
+        """运行完整的签到流程，失败时自动重试
+
+        Returns:
+            整体流程是否成功
+        """
+        max_attempts = self.config.get('max_retry', 3)
+        retry_delay = 30  # 重试间隔（秒）
+        success = False
+        traffic = None
+
+        self.logger.info("=" * 50)
+        self.logger.info(f"开始执行签到任务 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        self.logger.info("=" * 50)
+
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                self.logger.info(f"--- 第 {attempt}/{max_attempts} 次尝试 (等待 {retry_delay}s) ---")
+                time.sleep(retry_delay)
+
+            success, traffic = self._run_once()
+            if success:
+                break
+
+            self.logger.warning(f"第 {attempt}/{max_attempts} 次尝试失败")
+
+        self.logger.info("=" * 50)
+        self.logger.info(f"任务结束 - 状态: {'成功' if success else '失败'}")
+        self.logger.info("=" * 50)
+
+        # 发送推送通知
+        if self.notifier:
+            try:
+                if success:
+                    traffic_str = f"{traffic}M" if traffic else None
+                    self.notifier.send_checkin_success(
+                        traffic=traffic_str,
+                        details=f"签到时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+                else:
+                    self.notifier.send_checkin_failure(
+                        error_msg="签到流程执行失败",
+                        details=f"失败时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\\n请查看日志文件获取详细信息"
+                    )
+            except Exception as e:
+                self.logger.warning(f"发送推送通知失败: {e}")
+
         return success
 
 
