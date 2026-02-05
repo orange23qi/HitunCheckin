@@ -49,6 +49,40 @@ if [ "$RUN_MODE" = "cron" ]; then
 fi
 log "=========================================="
 
+# 从 cron 表达式解析目标时和分 (仅支持固定时间，如 "30 8 * * *")
+parse_schedule() {
+    CRON_MIN=$(echo "$CRON_SCHEDULE" | awk '{print $1}')
+    CRON_HOUR=$(echo "$CRON_SCHEDULE" | awk '{print $2}')
+
+    # 验证是否为固定数字
+    if ! echo "$CRON_MIN" | grep -qE '^[0-9]+$' || ! echo "$CRON_HOUR" | grep -qE '^[0-9]+$'; then
+        error "Shell 调度器仅支持固定时间的 cron 表达式 (如 '30 8 * * *')"
+        error "当前表达式: ${CRON_SCHEDULE}"
+        exit 1
+    fi
+
+    log "调度目标时间: 每天 ${CRON_HOUR}:$(printf '%02d' ${CRON_MIN})"
+}
+
+# 计算距离下次执行还需要睡眠多少秒
+calc_sleep_seconds() {
+    local now_epoch=$(date +%s)
+    # 构造今天的目标时间
+    local target=$(date -d "today ${CRON_HOUR}:$(printf '%02d' ${CRON_MIN}):00" +%s 2>/dev/null)
+
+    # 如果目标时间已过，则设为明天
+    if [ "$target" -le "$now_epoch" ]; then
+        target=$(( target + 86400 ))
+    fi
+
+    echo $(( target - now_epoch ))
+}
+
+run_checkin() {
+    log "开始执行签到任务..."
+    cd /app && python hitun_checkin.py --config /app/data/config.json || warn "签到任务执行失败"
+}
+
 case "$RUN_MODE" in
     "once")
         # 单次运行模式
@@ -57,30 +91,26 @@ case "$RUN_MODE" in
         ;;
 
     "cron")
-        # 定时任务模式
-        log "设置定时任务..."
-
-        # 将容器环境变量导出到文件，供 cron 子进程使用
-        env | grep -v '^_=' | grep -v '^HOSTNAME=' | grep -v '^HOME=' | \
-            sed 's/^\(.*\)$/export \1/' > /app/.env.sh
-        chmod 600 /app/.env.sh
-
-        # 创建 cron 任务文件（先加载环境变量再执行）
-        echo "${CRON_SCHEDULE} . /app/.env.sh && cd /app && /usr/local/bin/python hitun_checkin.py --config /app/data/config.json >> /app/logs/cron.log 2>&1" > /etc/cron.d/hitun-checkin
-        chmod 0644 /etc/cron.d/hitun-checkin
-        crontab /etc/cron.d/hitun-checkin
-
-        log "定时任务已设置: ${CRON_SCHEDULE}"
-        log "容器将持续运行，等待定时任务执行..."
+        parse_schedule
 
         # 先执行一次签到（可选）
         if [ "${RUN_ON_START:-false}" = "true" ]; then
             log "启动时执行一次签到..."
-            cd /app && python hitun_checkin.py --config /app/data/config.json || warn "启动签到失败，但容器将继续运行"
+            run_checkin
         fi
 
-        # 启动 cron 并保持前台运行
-        cron -f
+        # 使用 sleep 循环代替 cron 守护进程（在 Docker slim 镜像中更可靠）
+        log "进入调度循环，等待定时任务执行..."
+        while true; do
+            sleep_secs=$(calc_sleep_seconds)
+            next_time=$(date -d "@$(( $(date +%s) + sleep_secs ))" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+            log "下次执行时间: ${next_time} (${sleep_secs} 秒后)"
+
+            sleep "${sleep_secs}"
+
+            log "定时任务触发"
+            run_checkin
+        done
         ;;
 
     "test")
